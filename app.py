@@ -5,6 +5,12 @@ from PIL import Image, ImageTk, ImageDraw
 import numpy as np
 import time
 import threading
+import pandas as pd
+import geopandas as gpd
+import json
+import torchvision.transforms as T
+import segmentation_models_pytorch as smp
+import os
 
 class GPKGViewer:
     def __init__(self, root):
@@ -24,7 +30,30 @@ class GPKGViewer:
         self.dragging = False
         self.divider_pos = 0.5
         self.dragging_divider = False
-        
+        self.__ice_types = pd.read_csv("/home/prokofev.a@agtu.ru/Загрузки/qgis temp/Обучение моделей/dataset/ice_types.csv", index_col=0, dtype=np.int32)
+        self.__transform = T.Compose([T.ToTensor()])
+        self.__device = torch.device('cuda')
+
+        os.environ['TORCH_HOME'] = 'models'
+
+        self.__model = smp.PSPNet(
+            encoder_name='resnet50',
+            #encoder_weights='imagenet',
+            in_channels=13,
+            psp_dropout=0.1,
+            classes=3
+        ).to(self.__device)
+
+        self.__model.load_state_dict(torch.load("model.pt"))
+        self.__model.eval()
+
+        with open('ice_types_dict.json', 'r', encoding='utf-8-sig') as f:
+            self.__ice_dict = json.load(f)
+        for cat in self.__ice_dict['fields'].keys():
+            vals = [int(i) for i in self.__ice_dict['cifer'][cat].keys()]
+            for field in self.__ice_dict['fields'][cat]:
+                self.__ice_types[field] = self.__ice_types[field].map(dict(zip(vals, [i / (len(vals) - 1) for i in range(0, len(vals))] )))
+
         # Создание интерфейса
         self.create_menu()
         self.create_canvas()
@@ -89,12 +118,22 @@ class GPKGViewer:
             threading.Thread(target=self.load_file, args=(file_path,)).start()
     
     def load_file(self, file_path):
-        # Имитация загрузки файла
-        time.sleep(1)
-        
-        # Создаем случайный тензор 13x1000x1000 и названия слоёв
-        self.original_tensor = torch.rand(13, 1000, 1000)
-        layer_names = [f"Слой {i+1}" for i in range(13)]
+
+        data = gpd.read_file(file_path).sort_values(by=['point_id'])
+        data = data.rename(columns={"vv": "one", "hh": "one", "vh": "two", "hv": "two"})
+
+        layer_names = ['one', 'two', 'ssrd', 'strd', 'e', 'u10', 'v10', 't2m', 'sst', 'sp', 'rsn', 'sd', 'lsm']
+
+        for layer in layer_names:
+            if data[layer].isna().any(axis=0):
+                mean = data[layer][data[layer].notna()].mean()
+                mean = 0 if mean is np.nan else mean
+                data[layer] = data[layer].fillna(mean)
+
+        image_channels = []
+        for layer in layer_names:
+            image_channels.append(np.reshape(data[layer].to_numpy(dtype=np.float32), (1000, 1000), order="F"))
+        self.original_tensor = self.__transform(np.stack(image_channels, axis=-1))
         
         # Обновляем интерфейс в основном потоке
         self.root.after(0, self.update_after_load, layer_names)
@@ -144,7 +183,12 @@ class GPKGViewer:
             return
             
         # Получаем текущий слой и нормализуем его для отображения
-        layer = self.processed_tensor[self.current_processed_layer].numpy()
+        layer = self.processed_tensor[self.current_processed_layer].numpy().astype(np.int32)
+        indexes = np.unique(layer)
+        keys = [i for i in self.__ice_dict['cifer'].keys()]
+        values = [i for i in self.__ice_dict['cifer'][keys[self.current_processed_layer]].values()]
+
+        self.set_top_right_text("\n".join([values[i] for i in indexes]))
         layer = (layer - layer.min()) / (layer.max() - layer.min()) * 255
         layer = layer.astype(np.uint8)
         
@@ -226,12 +270,17 @@ class GPKGViewer:
         threading.Thread(target=self.run_processing).start()
     
     def run_processing(self):
-        # Имитация обработки
-        time.sleep(2)
-        
-        # Создаем случайный тензор 4x1000x1000
-        self.processed_tensor = torch.rand(4, 1000, 1000)
-        processed_layer_names = [f"Результат {i+1}" for i in range(4)]
+        self.original_tensor = self.original_tensor.to(self.__device)
+        processed_layer_names = ["CA", "SA", "FA"]
+
+        with torch.no_grad():
+            self.processed_tensor = self.__model(self.original_tensor[None, :, :, :]).cpu()[0]
+            self.original_tensor = self.original_tensor.cpu()
+
+        for i, layer in enumerate(self.__ice_dict.keys()):
+            self.processed_tensor[i] *= len(self.__ice_dict[layer].values()) - 1
+
+            self.processed_tensor[i] = torch.bucketize(self.processed_tensor[i], torch.tensor(range(len(self.__ice_dict[layer].values()))))
         
         # Обновляем интерфейс в основном потоке
         self.root.after(0, self.update_after_processing, processed_layer_names)
