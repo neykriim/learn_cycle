@@ -12,6 +12,85 @@ import torchvision.transforms as T
 import segmentation_models_pytorch as smp
 import os
 
+class FrequencyFilter(torch.nn.Module):
+    def __init__(self, filter_size=2):
+        """
+        Args:
+            filter_size: int - абсолютный размер в пикселях
+            filter_type: 'highpass' или 'lowpass'
+        """
+        super(FrequencyFilter, self).__init__()
+        self.__filter_size = filter_size
+    
+    def forward(self, x):
+        for index in range(x.shape[0]):
+            layer = x[index].clone()
+            # FFT
+            fft = torch.fft.fft2(layer)
+            fft_shift = torch.fft.fftshift(fft)
+            
+            # Создаем маску
+            h, w = layer.shape
+            crow, ccol = h // 2, w // 2
+            mask = torch.ones((h, w), device=layer.device)
+            mask[crow-self.__filter_size:crow+self.__filter_size, 
+                ccol-self.__filter_size:ccol+self.__filter_size] = 0
+            
+            # Применяем фильтр
+            filtered_fft = fft_shift * mask
+            x[index] = torch.fft.ifft2(torch.fft.ifftshift(filtered_fft)).real
+        
+        return x
+
+class HistogramEqualizer(torch.nn.Module):
+    def __init__(self, bins=256):
+        super(HistogramEqualizer, self).__init__()
+        self.__bins = bins
+    
+    def forward(self, x):
+        """
+        Args:
+            x: Tensor shape (..., H, W) - любой размерности
+        Returns:
+            Equalized tensor same shape as input
+        """
+        
+        for index in range(x.shape[0]):
+            layer = x[index].clone()
+            orig_shape = layer.shape
+            x_flat = layer.flatten()
+            
+            # Вычисляем min/max если не заданы
+            min_val = x_flat.min()
+            max_val = x_flat.max()
+            
+            # Нормализуем в [0, bins-1]
+            x_norm = (x_flat - min_val) * (self.__bins - 1) / (max_val - min_val + 1e-8)
+            x_norm = torch.clamp(x_norm, 0, self.__bins - 1)
+            
+            # Вычисляем гистограмму и CDF
+            hist = torch.bincount(x_norm.to(torch.long), minlength=self.__bins)
+            cdf = torch.cumsum(hist, dim=0)
+            cdf_normalized = (cdf - cdf.min()) / (cdf.max() - cdf.min() + 1e-8)
+            
+            # Применяем эквализацию
+            equalized = cdf_normalized[x_norm.to(torch.long)]
+            x[index] = equalized.reshape(orig_shape)
+        
+        return x
+
+class MinMaxScaler(torch.nn.Module):
+    def __init__(self, minimum, maximum):
+        super(MinMaxScaler, self).__init__()
+        self.__min = minimum
+        self.__max = maximum
+    
+    def forward(self, obj: torch.Tensor):
+        for index in range(obj.shape[0]):
+            layer = obj[index].clone()
+            obj[index] = (layer - self.__min[index]) / (self.__max[index] - self.__min[index] + 1e-8)
+        return obj
+
 class GPKGViewer:
     def __init__(self, root):
         self.root = root
@@ -30,8 +109,31 @@ class GPKGViewer:
         self.dragging = False
         self.divider_pos = 0.5
         self.dragging_divider = False
-        self.__ice_types = pd.read_csv("/home/prokofev.a@agtu.ru/Загрузки/qgis temp/Обучение моделей/dataset/ice_types.csv", index_col=0, dtype=np.int32)
-        self.__transform = T.Compose([T.ToTensor()])
+        
+        with open('dataset_parameters.json', 'r') as f:
+            parameters = json.load(f)
+        mins = []
+        maxs = []
+        for layer in ('ssrd', 'strd', 'e', 'u10', 'v10', 't2m', 'sst', 'sp', 'rsn', 'sd', 'lsm'):
+            mins.append(parameters[layer]['min'])
+            maxs.append(parameters[layer]['max'])
+        self.__transform = [
+            T.Compose([
+                T.ToTensor(),
+                T.CenterCrop(1000),
+                FrequencyFilter(2),
+                HistogramEqualizer(bins=256)
+            ]),
+            T.Compose([
+                T.ToTensor(),
+                T.CenterCrop(1000),
+                MinMaxScaler(mins, maxs)
+            ]),
+            T.Compose([
+                T.ToTensor(),
+                T.CenterCrop(1000)
+            ])
+        ]
         self.__device = torch.device('cuda')
 
         os.environ['TORCH_HOME'] = 'models'
@@ -44,15 +146,23 @@ class GPKGViewer:
             classes=3
         ).to(self.__device)
 
-        self.__model.load_state_dict(torch.load("model.pt"))
+        self.__model.load_state_dict(torch.load("best.pt")['model_state_dict'])
         self.__model.eval()
 
-        with open('ice_types_dict.json', 'r', encoding='utf-8-sig') as f:
-            self.__ice_dict = json.load(f)
-        for cat in self.__ice_dict['fields'].keys():
-            vals = [int(i) for i in self.__ice_dict['cifer'][cat].keys()]
-            for field in self.__ice_dict['fields'][cat]:
-                self.__ice_types[field] = self.__ice_types[field].map(dict(zip(vals, [i / (len(vals) - 1) for i in range(0, len(vals))] )))
+        #with open('ice_types_dict.json', 'r', encoding='utf-8-sig') as f:
+        #    self.__ice_dict = json.load(f)
+        #for cat in self.__ice_dict['fields'].keys():
+        #    vals = [int(i) for i in self.__ice_dict['cifer'][cat].keys()]
+        #    for field in self.__ice_dict['fields'][cat]:
+        #        self.__ice_types[field] = self.__ice_types[field].map(dict(zip(vals, [i / (len(vals) - 1) for i in range(0, len(vals))] )))
+
+        self.__ice_types = pd.read_csv("/home/prokofev.a@agtu.ru/Загрузки/qgis temp/Обучение моделей/dataset/ice_types.csv", index_col=0, dtype=np.int32)
+        self.__maskNames = ('CA', 'SA', 'FA')
+        self.__maskClasses = []
+        for field in self.__maskNames:
+            un = np.sort(self.__ice_types[field].unique()).tolist()
+            self.__maskClasses.append(len(un))
+            self.__ice_types[field] = self.__ice_types[field].map(dict(zip(un, np.linspace(0, 1, len(un)).tolist())))
 
         # Создание интерфейса
         self.create_menu()
@@ -133,8 +243,9 @@ class GPKGViewer:
         image_channels = []
         for layer in layer_names:
             image_channels.append(np.reshape(data[layer].to_numpy(dtype=np.float32), (1000, 1000), order="F"))
-        self.original_tensor = self.__transform(np.stack(image_channels, axis=-1))
-        
+        image = np.stack(image_channels, axis=-1)
+        self.original_tensor = torch.cat((self.__transform[0](image[:,:,:2]), self.__transform[1](image[:,:,2:])))
+
         # Обновляем интерфейс в основном потоке
         self.root.after(0, self.update_after_load, layer_names)
     
@@ -271,22 +382,21 @@ class GPKGViewer:
     
     def run_processing(self):
         self.original_tensor = self.original_tensor.to(self.__device)
-        processed_layer_names = ["CA", "SA", "FA"]
+        self.__maskNames
 
         with torch.no_grad():
             self.processed_tensor = self.__model(self.original_tensor[None, :, :, :]).cpu()[0]
             self.original_tensor = self.original_tensor.cpu()
 
-        for i, layer in enumerate(self.__ice_dict.keys()):
-            self.processed_tensor[i] *= len(self.__ice_dict[layer].values()) - 1
-
-            self.processed_tensor[i] = torch.bucketize(self.processed_tensor[i], torch.tensor(range(len(self.__ice_dict[layer].values()))))
+        for i in range(len(self.__maskClasses)):
+            self.processed_tensor[0][i] *= self.__maskClasses[i] - 1
+            
+            self.processed_tensor[0][i] = torch.bucketize(self.processed_tensor[0][i], torch.tensor(range(self.__maskClasses[i] - 1)))
         
         # Обновляем интерфейс в основном потоке
-        self.root.after(0, self.update_after_processing, processed_layer_names)
+        self.root.after(0, self.update_after_processing)
     
-    def update_after_processing(self, layer_names):
-        self.processed_layer_names = layer_names
+    def update_after_processing(self):
         self.current_processed_layer = 0
         
         # Очищаем старые кнопки
@@ -298,7 +408,7 @@ class GPKGViewer:
         self.right_button_frame.pack(side=tk.RIGHT, fill=tk.Y)
         
         # Создаем новые кнопки для слоёв
-        for i, name in enumerate(self.processed_layer_names):
+        for i, name in enumerate(self.__maskNames):
             btn = tk.Button(self.right_button_frame, text=name, 
                            command=lambda idx=i: self.switch_processed_layer(idx))
             btn.pack(fill=tk.X, padx=2, pady=2)
