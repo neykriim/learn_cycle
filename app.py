@@ -297,10 +297,10 @@ class GPKGViewer:
             
         # Получаем текущий слой и нормализуем его для отображения
         layer = self.processed_tensor[self.current_processed_layer].numpy()#.astype(np.int32)
-        plt.imshow(layer)
-        plt.show()
+        #plt.imshow(layer)
+        #plt.show()
         indexes = np.unique(layer)
-        print(indexes)
+        #print(indexes)
         keys = [i for i in self.__ice_dict['cifer'].keys()]
         values = [self.__ice_dict['cifer'][keys[self.current_processed_layer]][key] for key in self.__ice_dict['cifer'][keys[self.current_processed_layer]].keys() if not key in ('-9', '99')]
 
