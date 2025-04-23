@@ -11,6 +11,7 @@ import json
 import torchvision.transforms as T
 import segmentation_models_pytorch as smp
 import os
+import matplotlib.pyplot as plt
 
 class FrequencyFilter(torch.nn.Module):
     def __init__(self, filter_size=2):
@@ -143,14 +144,15 @@ class GPKGViewer:
             #encoder_weights='imagenet',
             in_channels=13,
             psp_dropout=0.1,
-            classes=3
+            classes=3,
+            activation='sigmoid'
         ).to(self.__device)
 
         self.__model.load_state_dict(torch.load("best.pt")['model_state_dict'])
-        self.__model.eval()
+        #self.__model.eval()
 
-        #with open('ice_types_dict.json', 'r', encoding='utf-8-sig') as f:
-        #    self.__ice_dict = json.load(f)
+        with open('ice_types_dict.json', 'r', encoding='utf-8-sig') as f:
+            self.__ice_dict = json.load(f)
         #for cat in self.__ice_dict['fields'].keys():
         #    vals = [int(i) for i in self.__ice_dict['cifer'][cat].keys()]
         #    for field in self.__ice_dict['fields'][cat]:
@@ -294,14 +296,17 @@ class GPKGViewer:
             return
             
         # Получаем текущий слой и нормализуем его для отображения
-        layer = self.processed_tensor[self.current_processed_layer].numpy().astype(np.int32)
+        layer = self.processed_tensor[self.current_processed_layer].numpy()#.astype(np.int32)
+        plt.imshow(layer)
+        plt.show()
         indexes = np.unique(layer)
+        print(indexes)
         keys = [i for i in self.__ice_dict['cifer'].keys()]
-        values = [i for i in self.__ice_dict['cifer'][keys[self.current_processed_layer]].values()]
+        values = [self.__ice_dict['cifer'][keys[self.current_processed_layer]][key] for key in self.__ice_dict['cifer'][keys[self.current_processed_layer]].keys() if not key in ('-9', '99')]
 
         self.set_top_right_text("\n".join([values[i] for i in indexes]))
         layer = (layer - layer.min()) / (layer.max() - layer.min()) * 255
-        layer = layer.astype(np.uint8)
+        #layer = layer.astype(np.uint8)
         
         # Создаем изображение из массива
         self.processed_image = Image.fromarray(layer)
@@ -383,16 +388,18 @@ class GPKGViewer:
     def run_processing(self):
         self.original_tensor = self.original_tensor.to(self.__device)
         self.__maskNames
-
+        self.__model.eval()
         with torch.no_grad():
             self.processed_tensor = self.__model(self.original_tensor[None, :, :, :]).cpu()[0]
             self.original_tensor = self.original_tensor.cpu()
 
         for i in range(len(self.__maskClasses)):
-            self.processed_tensor[0][i] *= self.__maskClasses[i] - 1
+            self.processed_tensor[i] *= self.__maskClasses[i] - 1
             
-            self.processed_tensor[0][i] = torch.bucketize(self.processed_tensor[0][i], torch.tensor(range(self.__maskClasses[i] - 1)))
+            self.processed_tensor[i] = torch.bucketize(self.processed_tensor[i], torch.tensor(range(self.__maskClasses[i] - 1)))
         
+        self.processed_tensor = self.processed_tensor.int()
+
         # Обновляем интерфейс в основном потоке
         self.root.after(0, self.update_after_processing)
     
