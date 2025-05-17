@@ -1,4 +1,6 @@
 import torch
+import random
+import torchvision.transforms.functional as F
 
 class RandomRotation(torch.nn.Module):
     '''
