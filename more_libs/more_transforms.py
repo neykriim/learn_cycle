@@ -1,6 +1,7 @@
 import torch
 import random
 import torchvision.transforms.functional as F
+import torchvision.transforms as T
 
 class RandomRotation(torch.nn.Module):
     '''
@@ -27,6 +28,32 @@ class RandomRotation(torch.nn.Module):
         if self.__result < self.__p:
             return F.rotate(obj, self.__angle)
         return obj
+
+class RandomCrop(torch.nn.Module):
+    '''
+    Случайная обрезка
+    '''
+    def __init__(self, counter=3,output_size=224):
+        super(RandomCrop, self).__init__()
+        self.__output_size = output_size
+        self.__counter = counter
+        self.__currentCounter = counter
+        #self.__result = 0
+        #self.__angle = 0
+        #self.__p = p
+    
+    def forward(self, obj: torch.Tensor):
+        if self.__currentCounter == self.__counter:
+            self.__i, self.__j, self.__h, self.__w = T.RandomCrop.get_params(obj, output_size=self.__output_size)
+            #self.__result = torch.rand(1)
+            #self.__angle = random.choice([90, 180, 270])
+
+        self.__currentCounter -= 1
+
+        if self.__currentCounter == 0:
+            self.__currentCounter = self.__counter
+
+        return F.crop(obj, self.__i, self.__j, self.__h, self.__w)
 
 class MinMaxScaler(torch.nn.Module):
     '''
