@@ -58,7 +58,7 @@ def skipRare(dataset, classes = ["SA", "FA"], treshold=0.05):
     Убрать редкие значения
     '''
     d = dataset.loc[:, (classes, slice(None))].mul(dataset[('count', '')], axis=0).sum()
-    ignoreVariants = d[d < treshold * len(dataset) * 1000000].index
+    ignoreVariants = d[d < treshold * dataset['count'].sum() * 1000000].index
 
     dataset = dataset[pd.concat([dataset[cond] == 0 for cond in ignoreVariants], axis=1).all(axis=1)]
     dataset = dataset.drop(columns=ignoreVariants)
