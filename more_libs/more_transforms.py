@@ -70,6 +70,21 @@ class MinMaxScaler(torch.nn.Module):
             obj[index] = (layer - self.__min[index]) / (self.__max[index] - self.__min[index] + 1e-8)
         return obj
 
+class MeanStdScaler(torch.nn.Module):
+    '''
+    Скалирование от среднего до плюс-минус std
+    '''
+    def __init__(self, mean, std):
+        super(MeanStdScaler, self).__init__()
+        self.__mean = mean
+        self.__std = std
+    
+    def forward(self, obj: torch.Tensor):
+        for index in range(obj.shape[0]):
+            layer = obj[index].clone()
+            obj[index] = (layer - self.__mean[index]) / (self.__std[index] + 1e-8)
+        return obj
+
 class HistogramEqualizer(torch.nn.Module):
     '''
     Выравнивание гистограммы
