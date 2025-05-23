@@ -1,2 +1,8 @@
 /models
 /mlruns
+tools/ip_minitor.py
+tools/telegram_notify.py
+FA.png
+SA.png
+**/*.cpython-311..pyc
+**/*.cpython-311..pyc
