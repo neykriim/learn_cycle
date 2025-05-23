@@ -5,4 +5,7 @@ tools/telegram_notify.py
 FA.png
 SA.png
 **/*.cpython-311.pyc
-**/*.cpython-311.pyc
+**/*-checkpoint.py
+**/*-checkpoint.json
+**/*-checkpoint.csv
+**/*-checkpoint.ipynb
