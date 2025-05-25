@@ -7,9 +7,12 @@ SA.png
 **/*.cpython-311.pyc
 **/*-checkpoint.py
 **/*-checkpoint.json
+**/*-checkpoint.png
 **/*-checkpoint.csv
 **/*-checkpoint.ipynb
 **/*.yaml
-Segformer even less climate only FA/best_accuracy_FA/MLmodel
-Segformer even less climate only FA/best_accuracy_FA/desc.txt
-Segformer even less climate only FA/best_vloss/requirements.txt
+**/*.pth
+**/MLmodel
+**/desc.txt
+**/requirements.txt
+**/pickle_module_info.txt
