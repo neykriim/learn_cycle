@@ -9,3 +9,7 @@ SA.png
 **/*-checkpoint.json
 **/*-checkpoint.csv
 **/*-checkpoint.ipynb
+**/*.yaml
+Segformer even less climate only FA/best_accuracy_FA/MLmodel
+Segformer even less climate only FA/best_accuracy_FA/desc.txt
+Segformer even less climate only FA/best_vloss/requirements.txt
