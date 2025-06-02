@@ -16,3 +16,4 @@ SA.png
 **/desc.txt
 **/requirements.txt
 **/pickle_module_info.txt
+!app.pth

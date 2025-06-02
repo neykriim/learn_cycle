@@ -9,9 +9,15 @@ import pandas as pd
 import geopandas as gpd
 import json
 import torchvision.transforms as T
+import torchvision.transforms.functional as F
 import segmentation_models_pytorch as smp
 import os
+import random
+import matplotlib
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+
+matplotlib.use('TkAgg')
 
 class FrequencyFilter(torch.nn.Module):
     def __init__(self, filter_size=2):
@@ -80,22 +86,25 @@ class HistogramEqualizer(torch.nn.Module):
         
         return x
 
-class MinMaxScaler(torch.nn.Module):
-    def __init__(self, minimum, maximum):
-        super(MinMaxScaler, self).__init__()
-        self.__min = minimum
-        self.__max = maximum
+class MeanStdScaler(torch.nn.Module):
+    '''
+    Скалирование от среднего до плюс-минус std
+    '''
+    def __init__(self, mean, std):
+        super(MeanStdScaler, self).__init__()
+        self.__mean = mean
+        self.__std = std
     
     def forward(self, obj: torch.Tensor):
         for index in range(obj.shape[0]):
             layer = obj[index].clone()
-            obj[index] = (layer - self.__min[index]) / (self.__max[index] - self.__min[index] + 1e-8)
+            obj[index] = (layer - self.__mean[index]) / (self.__std[index] + 1e-8)
         return obj
 
-class GPKGViewer:
+class IceNice:
     def __init__(self, root):
         self.root = root
-        self.root.title("GPKG Viewer")
+        self.root.title("IceNice")
         
         # Инициализация переменных
         self.original_tensor = None
@@ -111,72 +120,64 @@ class GPKGViewer:
         self.divider_pos = 0.5
         self.dragging_divider = False
         
-        with open('dataset_parameters.json', 'r') as f:
-            parameters = json.load(f)
-        mins = []
-        maxs = []
-        for layer in ('ssrd', 'strd', 'e', 'u10', 'v10', 't2m', 'sst', 'sp', 'rsn', 'sd', 'lsm'):
-            mins.append(parameters[layer]['min'])
-            maxs.append(parameters[layer]['max'])
-        self.__transform = [
-            T.Compose([
+        self.layerNames = ('one', 'two', 'strd', 'e', 'u10', 'v10', 't2m', 'sp')
+        parameters = pd.read_csv('dataset_parameters.csv', index_col=0)
+        parameters = parameters[parameters['layer'].isin(self.layerNames)]
+
+        self.__transform = {
+            "image": T.Compose([
                 T.ToTensor(),
-                T.CenterCrop(1000),
                 FrequencyFilter(2),
-                HistogramEqualizer(bins=256)
+                HistogramEqualizer(bins=256),
+                T.Resize(1024)
             ]),
-            T.Compose([
+            'climate': T.Compose([
                 T.ToTensor(),
-                T.CenterCrop(1000),
-                MinMaxScaler(mins, maxs)
+                MeanStdScaler(parameters['mean'][2:].values, parameters['std'][2:].values),
+                T.Resize(1024)
             ]),
-            T.Compose([
+            'label': T.Compose([
                 T.ToTensor(),
-                T.CenterCrop(1000)
+                T.Resize(1024, interpolation=T.InterpolationMode.NEAREST)
+            ]),
+            'common': T.Compose([
+                T.Lambda(lambda x: F.rotate(x, random.choice([0, 90, 180, 270]))),
+                T.RandomHorizontalFlip(0.5),
+                T.RandomVerticalFlip(0.5)
             ])
-        ]
+        }
         self.__device = torch.device('cuda')
 
         os.environ['TORCH_HOME'] = 'models'
 
-        self.__model = smp.PSPNet(
-            encoder_name='resnet50',
-            #encoder_weights='imagenet',
-            in_channels=13,
-            psp_dropout=0.1,
-            classes=3,
-            activation='sigmoid'
-        ).to(self.__device)
-
-        self.__model.load_state_dict(torch.load("best.pt")['model_state_dict'])
-        #self.__model.eval()
+        #self.__model = torch.load("mlruns/522018903483609275/90deaebc8b1a4d2f8d9b90756f775183/artifacts/best_vloss/data/model.pth", weights_only=False).to(self.__device)
+        self.__model = torch.load("app.pth", weights_only=False).to(self.__device)
+        self.__model.eval()
 
         with open('ice_types_dict.json', 'r', encoding='utf-8-sig') as f:
-            self.__ice_dict = json.load(f)
+            self.__ice_dict = json.load(f)['cifer']
         #for cat in self.__ice_dict['fields'].keys():
         #    vals = [int(i) for i in self.__ice_dict['cifer'][cat].keys()]
         #    for field in self.__ice_dict['fields'][cat]:
         #        self.__ice_types[field] = self.__ice_types[field].map(dict(zip(vals, [i / (len(vals) - 1) for i in range(0, len(vals))] )))
 
         self.__ice_types = pd.read_csv("/home/prokofev.a@agtu.ru/Загрузки/qgis temp/Обучение моделей/dataset/ice_types.csv", index_col=0, dtype=np.int32)
-        self.__maskNames = ('CA', 'SA', 'FA')
-        self.__maskClasses = []
-        for field in self.__maskNames:
-            un = np.sort(self.__ice_types[field].unique()).tolist()
-            self.__maskClasses.append(len(un))
-            self.__ice_types[field] = self.__ice_types[field].map(dict(zip(un, np.linspace(0, 1, len(un)).tolist())))
+        self.__maskNames = ('SA', 'FA')
+        self.__maskClasses = [[87, 85, 91],
+                              [8, 5, 4]]
 
         # Создание интерфейса
         self.create_menu()
         self.create_canvas()
         self.create_layer_buttons()
         self.create_process_button()
-        self.create_text_areas()
+        #self.create_text_areas()
         
     def create_menu(self):
         menubar = tk.Menu(self.root)
         file_menu = tk.Menu(menubar, tearoff=0)
         file_menu.add_command(label="Открыть", command=self.open_file)
+        file_menu.add_command(label="Сохранить", command=self.save_file)
         menubar.add_cascade(label="Файл", menu=file_menu)
         self.root.config(menu=menubar)
     
@@ -210,14 +211,14 @@ class GPKGViewer:
         self.process_button.pack(side=tk.BOTTOM, pady=5)
         self.process_button.pack_forget()  # Скрываем кнопку изначально
         
-    def create_text_areas(self):
-        # Верхний левый текст
-        self.top_left_text = tk.Label(self.root, text="", bg="white", relief=tk.SUNKEN, padx=10, pady=5)
-        self.top_left_text.place(relx=0, rely=0, anchor=tk.NW)
+    # def create_text_areas(self):
+    #     # Верхний левый текст
+    #     self.top_left_text = tk.Label(self.root, text="", bg="white", relief=tk.SUNKEN, padx=10, pady=5)
+    #     self.top_left_text.place(relx=0, rely=0, anchor=tk.NW)
         
-        # Верхний правый текст
-        self.top_right_text = tk.Label(self.root, text="", bg="white", relief=tk.SUNKEN, padx=10, pady=5)
-        self.top_right_text.place(relx=1, rely=0, anchor=tk.NE)
+    #     # Верхний правый текст
+    #     self.top_right_text = tk.Label(self.root, text="", bg="white", relief=tk.SUNKEN, padx=10, pady=5)
+    #     self.top_right_text.place(relx=1, rely=0, anchor=tk.NE)
     
     def open_file(self):
         file_path = filedialog.askopenfilename(filetypes=[("GPKG files", "*.gpkg")])
@@ -228,31 +229,36 @@ class GPKGViewer:
             # В реальной реализации здесь будет ваш код для чтения .gpkg файла
             # Для примера создадим случайный тензор и названия слоёв
             threading.Thread(target=self.load_file, args=(file_path,)).start()
+
+    def save_file(self):
+        pass
     
     def load_file(self, file_path):
 
         data = gpd.read_file(file_path).sort_values(by=['point_id'])
         data = data.rename(columns={"vv": "one", "hh": "one", "vh": "two", "hv": "two"})
 
-        layer_names = ['one', 'two', 'ssrd', 'strd', 'e', 'u10', 'v10', 't2m', 'sst', 'sp', 'rsn', 'sd', 'lsm']
+        #layer_names = ['one', 'two', 'ssrd', 'strd', 'e', 'u10', 'v10', 't2m', 'sst', 'sp', 'rsn', 'sd', 'lsm']
 
-        for layer in layer_names:
+        for layer in self.layerNames:
             if data[layer].isna().any(axis=0):
                 mean = data[layer][data[layer].notna()].mean()
                 mean = 0 if mean is np.nan else mean
                 data[layer] = data[layer].fillna(mean)
 
         image_channels = []
-        for layer in layer_names:
+        for layer in self.layerNames:
             image_channels.append(np.reshape(data[layer].to_numpy(dtype=np.float32), (1000, 1000), order="F"))
         image = np.stack(image_channels, axis=-1)
-        self.original_tensor = torch.cat((self.__transform[0](image[:,:,:2]), self.__transform[1](image[:,:,2:])))
+
+        self.original_tensor = torch.cat((self.__transform['image'](image[:,:,:2]), self.__transform['climate'](image[:,:,2:])))
+        self.original_tensor = self.__transform['common'](self.original_tensor)
 
         # Обновляем интерфейс в основном потоке
-        self.root.after(0, self.update_after_load, layer_names)
+        self.root.after(0, self.update_after_load)
     
-    def update_after_load(self, layer_names):
-        self.layer_names = layer_names
+    def update_after_load(self):
+        #self.layer_names = layer_names
         self.current_layer = 0
         
         # Очищаем старые кнопки
@@ -261,7 +267,7 @@ class GPKGViewer:
         self.layer_buttons = []
         
         # Создаем новые кнопки для слоёв
-        for i, name in enumerate(self.layer_names):
+        for i, name in enumerate(self.layerNames):
             btn = tk.Button(self.left_button_frame, text=name, 
                            command=lambda idx=i: self.switch_layer(idx))
             btn.pack(fill=tk.X, padx=2, pady=2)
@@ -294,23 +300,55 @@ class GPKGViewer:
     def show_processed_layer(self):
         if self.processed_tensor is None:
             return
-            
-        # Получаем текущий слой и нормализуем его для отображения
-        layer = self.processed_tensor[self.current_processed_layer].numpy()#.astype(np.int32)
-        #plt.imshow(layer)
-        #plt.show()
-        indexes = np.unique(layer)
-        #print(indexes)
-        keys = [i for i in self.__ice_dict['cifer'].keys()]
-        values = [self.__ice_dict['cifer'][keys[self.current_processed_layer]][key] for key in self.__ice_dict['cifer'][keys[self.current_processed_layer]].keys() if not key in ('-9', '99')]
-
-        self.set_top_right_text("\n".join([values[i] for i in indexes]))
-        layer = (layer - layer.min()) / (layer.max() - layer.min()) * 255
-        #layer = layer.astype(np.uint8)
         
-        # Создаем изображение из массива
-        self.processed_image = Image.fromarray(layer)
-        self.update_display()
+        labels = self.processed_tensor[self.current_processed_layer]
+
+        unique_classes = np.unique(labels)
+
+        np.random.seed(0)
+        class_colors = {cls: np.random.rand(3) for cls in unique_classes}
+
+        cmap = mcolors.ListedColormap([class_colors[cls] for cls in unique_classes])
+
+        sorted_classes = np.sort(unique_classes)
+        bounds = (sorted_classes[:-1] + sorted_classes[1:]) / 2  # Средние точки между классами
+        bounds = np.concatenate(([sorted_classes[0] - 1], bounds, [sorted_classes[-1] + 1]))  # Добавляем крайние значения
+
+        norm = mcolors.BoundaryNorm(bounds, cmap.N)
+        
+        fig, ax = plt.subplots()#figsize=(8, 6))
+        im = ax.imshow(labels, cmap=cmap, norm=norm)
+        ax.axis('off')
+
+        cbar = plt.colorbar(im, ax=ax, ticks=unique_classes)
+        cbar.set_label('Классы')
+
+        # with open('ice_types_dict.json', 'r', encoding='utf-8-sig') as f:
+        #     ice_dict = json.load(f)['cifer']
+        layers = self.__maskNames
+        layers = [i[0] for i in layers]
+        #print(self.__ice_dict[layers[self.current_processed_layer]])
+        cbar.ax.set_yticklabels([self.__ice_dict[layers[self.current_processed_layer]][str(i)] for i in [self.__maskClasses[self.current_processed_layer][i] for i in unique_classes]])
+        fig.canvas.manager.window.attributes('-topmost', 1)
+        fig.canvas.manager.window.attributes('-topmost', 0)
+        fig.show()
+
+        # # Получаем текущий слой и нормализуем его для отображения
+        # layer = self.processed_tensor[self.current_processed_layer].numpy()#.astype(np.int32)
+        # #plt.imshow(layer)
+        # #plt.show()
+        # indexes = np.unique(layer)
+        # #print(indexes)
+        # keys = [i for i in self.__ice_dict['cifer'].keys()]
+        # values = [self.__ice_dict['cifer'][keys[self.current_processed_layer]][key] for key in self.__ice_dict['cifer'][keys[self.current_processed_layer]].keys() if not key in ('-9', '99')]
+
+        # self.set_top_right_text("\n".join([values[i] for i in indexes]))
+        # layer = (layer - layer.min()) / (layer.max() - layer.min()) * 255
+        # #layer = layer.astype(np.uint8)
+        
+        # # Создаем изображение из массива
+        # self.processed_image = Image.fromarray(layer)
+        # self.update_display()
     
     def update_display(self):
         if not hasattr(self, 'original_image'):
@@ -339,31 +377,32 @@ class GPKGViewer:
         
         # Если есть обработанное изображение
         if hasattr(self, 'processed_image'):
+            pass
             # Масштабируем обработанное изображение
-            proc_size = (
-                int(self.processed_image.width * self.scale), 
-                int(self.processed_image.height * self.scale)
-            )
-            proc_img = self.processed_image.resize(proc_size, Image.Resampling.LANCZOS)
+            #proc_size = (
+            #    int(self.processed_image.width * self.scale), 
+            #    int(self.processed_image.height * self.scale)
+            #)
+            #proc_img = self.processed_image.resize(proc_size, Image.Resampling.LANCZOS)
             
             # Позиция обработанного изображения
-            proc_x = canvas_width * self.divider_pos + (canvas_width * (1 - self.divider_pos)) / 2 + self.offset_x
-            proc_y = canvas_height / 2 + self.offset_y
+            #proc_x = canvas_width * self.divider_pos + (canvas_width * (1 - self.divider_pos)) / 2 + self.offset_x
+            #proc_y = canvas_height / 2 + self.offset_y
             
             # Преобразуем в формат Tkinter
-            self.tk_proc_img = ImageTk.PhotoImage(proc_img)
+            #self.tk_proc_img = ImageTk.PhotoImage(proc_img)
             
             # Рисуем обработанное изображение
-            self.canvas.create_image(proc_x, proc_y, image=self.tk_proc_img, anchor=tk.CENTER)
+            #self.canvas.create_image(orig_x, orig_y, image=self.tk_proc_img, anchor=tk.CENTER)
             
             # Рисуем разделитель
-            divider_x = canvas_width * self.divider_pos
-            self.canvas.create_line(divider_x, 0, divider_x, canvas_height, fill="red", width=2, tags="divider")
+            #divider_x = canvas_width * self.divider_pos
+            #self.canvas.create_line(divider_x, 0, divider_x, canvas_height, fill="red", width=2, tags="divider")
             
             # Делаем разделитель перетаскиваемым
-            self.canvas.tag_bind("divider", "<ButtonPress-1>", self.start_divider_drag)
-            self.canvas.tag_bind("divider", "<B1-Motion>", self.drag_divider)
-            self.canvas.tag_bind("divider", "<ButtonRelease-1>", self.stop_divider_drag)
+            #self.canvas.tag_bind("divider", "<ButtonPress-1>", self.start_divider_drag)
+            #self.canvas.tag_bind("divider", "<B1-Motion>", self.drag_divider)
+            #self.canvas.tag_bind("divider", "<ButtonRelease-1>", self.stop_divider_drag)
     
     def switch_layer(self, layer_idx):
         self.current_layer = layer_idx
@@ -387,18 +426,22 @@ class GPKGViewer:
     
     def run_processing(self):
         self.original_tensor = self.original_tensor.to(self.__device)
-        self.__maskNames
+        #self.__maskNames
         self.__model.eval()
         with torch.no_grad():
-            self.processed_tensor = self.__model(self.original_tensor[None, :, :, :]).cpu()[0]
+            prediction = self.__model(self.original_tensor[None, :, :, :]).cpu()[0]
             self.original_tensor = self.original_tensor.cpu()
 
+        self.processed_tensor = []
         for i in range(len(self.__maskClasses)):
-            self.processed_tensor[i] *= self.__maskClasses[i] - 1
-            
-            self.processed_tensor[i] = torch.bucketize(self.processed_tensor[i], torch.tensor(range(self.__maskClasses[i] - 1)))
-        
-        self.processed_tensor = self.processed_tensor.int()
+            m = 0
+            for j in range(i):
+                m += len(self.__maskClasses[j])
+            labels = prediction[m : m + len(self.__maskClasses[i])]
+            labels = torch.nn.functional.softmax(labels, dim=0)
+            labels = torch.argmax(labels, dim=0)
+
+            self.processed_tensor.append(labels)
 
         # Обновляем интерфейс в основном потоке
         self.root.after(0, self.update_after_processing)
@@ -484,5 +527,5 @@ class GPKGViewer:
 if __name__ == "__main__":
     root = tk.Tk()
     root.geometry("1200x800")
-    app = GPKGViewer(root)
+    app = IceNice(root)
     root.mainloop()
