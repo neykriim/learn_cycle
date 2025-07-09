@@ -1,5 +1,6 @@
 /models
 /mlruns
+/модели, не сохранённые в mlflow
 tools/ip_minitor.py
 tools/telegram_notify.py
 FA.png
